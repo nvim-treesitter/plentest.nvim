@@ -29,8 +29,6 @@ local function get_trace(level, msg)
   return file and file.getTrace(file.name, info) or trimTrace(info)
 end
 
-local is_headless = (#vim.api.nvim_list_uis() == 0)
-
 -- We are shadowing print so people can reliably print messages
 print = function(...)
   for _, v in ipairs({ ... }) do
@@ -90,10 +88,6 @@ local color_table = {
 }
 
 local color_string = function(color, str)
-  if not is_headless then
-    return str
-  end
-
   return string.format(
     '%s[%sm%s%s[%sm',
     string.char(27),
@@ -233,11 +227,7 @@ mod.run = function(file)
     print('FAILED TO LOAD FILE')
     print(color_string('red', msg))
     print(HEADER)
-    if is_headless then
-      return vim.cmd('2cq')
-    else
-      return
-    end
+    return vim.cmd('2cq')
   end
 
   coroutine.wrap(function()
@@ -245,30 +235,19 @@ mod.run = function(file)
 
     -- If nothing runs (empty file without top level describe)
     if not results.pass then
-      if is_headless then
-        return vim.cmd('0cq')
-      else
-        return
-      end
+      return vim.cmd('0cq')
     end
 
     mod.format_results(results)
 
     if #results.errs ~= 0 then
       print('We had an unexpected error: ', vim.inspect(results.errs), vim.inspect(results))
-      if is_headless then
-        return vim.cmd('2cq')
-      end
+      return vim.cmd('2cq')
     elseif #results.fail > 0 then
       print('Tests Failed. Exit: 1')
-
-      if is_headless then
-        return vim.cmd('1cq')
-      end
+      return vim.cmd('1cq')
     else
-      if is_headless then
-        return vim.cmd('0cq')
-      end
+      return vim.cmd('0cq')
     end
   end)()
 end
