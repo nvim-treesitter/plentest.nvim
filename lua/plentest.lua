@@ -7,6 +7,23 @@ local function write(s)
   io.stdout:write('\n')
 end
 
+local KEYS = { 'Success', 'Failed', 'Errors', 'Pending' }
+
+--- Add the counts from the `PLENTEST` line that `busted.format_results` prints to `totals`, and
+--- return the output without that line.
+local function count(totals, stdout)
+  return (
+    stdout:gsub('PLENTEST ([%d ]+)\n', function(counts)
+      local i = 0
+      for n in counts:gmatch('%d+') do
+        i = i + 1
+        totals[KEYS[i]] = totals[KEYS[i]] + tonumber(n)
+      end
+      return ''
+    end)
+  )
+end
+
 local function test_paths(paths, opts)
   opts = vim.tbl_deep_extend('force', {
     nvim_cmd = vim.v.progpath,
@@ -18,7 +35,8 @@ local function test_paths(paths, opts)
 
   vim.env.PLENTEST_TIMEOUT = opts.timeout
 
-  local failure = false
+  local failed, timed_out = {}, {}
+  local totals = { Success = 0, Failed = 0, Errors = 0, Pending = 0 }
   local jobs = vim.tbl_map(function(p)
     local args = {
       opts.nvim_cmd,
@@ -42,11 +60,13 @@ local function test_paths(paths, opts)
     vim.system(job, { timeout = opts.timeout }, function(obj)
       -- Handle the result on the main loop, so that all output is written before the runner exits.
       vim.schedule(function()
-        failure = failure or obj.code ~= 0
         write(obj.stderr or '')
-        write(obj.stdout or '')
+        write(count(totals, obj.stdout or ''))
         if obj.code == 124 then
           write(('TIMEOUT after %d ms: %s'):format(opts.timeout, paths[i]))
+          table.insert(timed_out, paths[i])
+        elseif obj.code ~= 0 then
+          table.insert(failed, paths[i])
         end
         jobs[i] = nil
       end)
@@ -58,11 +78,24 @@ local function test_paths(paths, opts)
     return vim.tbl_isempty(jobs)
   end, 50)
 
-  if failure then
-    return vim.cmd('1cq')
+  write(string.rep('=', 40))
+  write(
+    ('Files: %d, Success: %d, Failed: %d, Errors: %d, Pending: %d'):format(
+      #paths,
+      totals.Success,
+      totals.Failed,
+      totals.Errors,
+      totals.Pending
+    )
+  )
+  for _, p in ipairs(failed) do
+    write('Failed file:    ' .. p)
+  end
+  for _, p in ipairs(timed_out) do
+    write('Timed out file: ' .. p)
   end
 
-  return vim.cmd('0cq')
+  return vim.cmd((#failed > 0 or #timed_out > 0) and '1cq' or '0cq')
 end
 
 function M.test_directory(directory, opts)

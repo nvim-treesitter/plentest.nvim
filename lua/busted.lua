@@ -109,13 +109,17 @@ mod.format_results = function(res)
   print(color_string('green', 'Success: '), #res.pass)
   print(color_string('red', 'Failed : '), #res.fail)
   print(color_string('red', 'Errors : '), #res.errs)
+  print(color_string('yellow', 'Pending: '), #res.pending)
   print(HEADER)
+  -- machine-readable counts for the runner (plentest.lua), which strips this line
+  io.stdout:write(('PLENTEST %d %d %d %d\n'):format(#res.pass, #res.fail, #res.errs, #res.pending))
 end
 
 mod.describe = function(desc, func)
   results.pass = results.pass or {}
   results.fail = results.fail or {}
   results.errs = results.errs or {}
+  results.pending = results.pending or {}
 
   describe = mod.inner_describe
   local ok, msg, desc_stack = call_inner(desc, func)
@@ -203,6 +207,9 @@ mod.pending = function(desc)
   local curr_stack = vim.deepcopy(current_description)
   table.insert(curr_stack, desc)
   print(PENDING, '||', table.concat(curr_stack, ' '))
+  if results.pending then
+    table.insert(results.pending, { descriptions = curr_stack })
+  end
 end
 
 describe = mod.describe
