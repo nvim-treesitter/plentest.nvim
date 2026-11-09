@@ -3,13 +3,6 @@ local dirname = function(p)
 end
 
 local function get_trace(level, msg)
-  local function trimTrace(info)
-    local index = info.traceback:find('\n%s*%[C]')
-    info.traceback = info.traceback:sub(1, index)
-    return info
-  end
-  level = level or 3
-
   local thisdir = dirname(debug.getinfo(1, 'Sl').source)
   local info = debug.getinfo(level, 'Sl')
   while
@@ -21,12 +14,13 @@ local function get_trace(level, msg)
     info = debug.getinfo(level, 'Sl')
   end
 
-  info.traceback = debug.traceback('', level)
-  info.message = msg
+  local traceback = debug.traceback('', level)
+  local index = traceback:find('\n%s*%[C]')
+  return msg .. '\n' .. traceback:sub(1, index)
+end
 
-  -- local file = busted.getFile(element)
-  local file = false
-  return file and file.getTrace(file.name, info) or trimTrace(info)
+local function handler(msg)
+  return get_trace(3, msg)
 end
 
 -- We are shadowing print so people can reliably print messages
@@ -41,7 +35,7 @@ end
 
 local mod = {}
 
-local results = {}
+local results = { pass = {}, fail = {}, errs = {}, pending = {} }
 local current_description = {}
 local current_before_each = {}
 local current_after_each = {}
@@ -69,12 +63,7 @@ end
 local call_inner = function(desc, func)
   local desc_stack = add_description(desc)
   add_new_each()
-  local ok, msg = xpcall(func, function(msg)
-    -- debug.traceback
-    -- return vim.inspect(get_trace(nil, 3, msg))
-    local trace = get_trace(3, msg)
-    return trace.message .. '\n' .. trace.traceback
-  end)
+  local ok, msg = xpcall(func, handler)
   clear_last_each()
   pop_description()
 
@@ -104,6 +93,15 @@ local PENDING = color_string('yellow', 'Pending')
 
 local HEADER = string.rep('=', 40)
 
+local indent = function(msg, spaces)
+  if spaces == nil then
+    spaces = 4
+  end
+
+  local prefix = string.rep(' ', spaces)
+  return prefix .. msg:gsub('\n', '\n' .. prefix)
+end
+
 mod.format_results = function(res)
   print('')
   print(color_string('green', 'Success: '), #res.pass)
@@ -116,24 +114,6 @@ mod.format_results = function(res)
 end
 
 mod.describe = function(desc, func)
-  results.pass = results.pass or {}
-  results.fail = results.fail or {}
-  results.errs = results.errs or {}
-  results.pending = results.pending or {}
-
-  describe = mod.inner_describe
-  local ok, msg, desc_stack = call_inner(desc, func)
-  describe = mod.describe
-
-  if not ok then
-    table.insert(results.errs, {
-      descriptions = desc_stack,
-      msg = msg,
-    })
-  end
-end
-
-mod.inner_describe = function(desc, func)
   local ok, msg, desc_stack = call_inner(desc, func)
 
   if not ok then
@@ -156,29 +136,28 @@ mod.clear = function()
   vim.api.nvim_buf_set_lines(0, 0, -1, false, {})
 end
 
-local indent = function(msg, spaces)
-  if spaces == nil then
-    spaces = 4
+--- Run the hooks of all levels: outermost first, or innermost first if `reverse`.
+local run_each = function(tbl, reverse)
+  local first, last, step = 1, #tbl, 1
+  if reverse then
+    first, last, step = last, first, -1
   end
-
-  local prefix = string.rep(' ', spaces)
-  return prefix .. msg:gsub('\n', '\n' .. prefix)
-end
-
-local run_each = function(tbl)
-  for _, v in ipairs(tbl) do
-    for _, w in ipairs(v) do
-      if type(w) == 'function' then
-        w()
-      end
+  for i = first, last, step do
+    for _, fn in ipairs(tbl[i] or {}) do
+      fn()
     end
   end
 end
 
 mod.it = function(desc, func)
-  run_each(current_before_each)
-  local ok, msg, desc_stack = call_inner(desc, func)
-  run_each(current_after_each)
+  local ok, msg, desc_stack = call_inner(desc, function()
+    run_each(current_before_each)
+    func()
+  end)
+  local after_ok, after_msg = xpcall(run_each, handler, current_after_each, true)
+  if ok and not after_ok then
+    ok, msg = false, after_msg
+  end
 
   local test_result = {
     descriptions = desc_stack,
@@ -207,9 +186,7 @@ mod.pending = function(desc)
   local curr_stack = vim.deepcopy(current_description)
   table.insert(curr_stack, desc)
   print(PENDING, '||', table.concat(curr_stack, ' '))
-  if results.pending then
-    table.insert(results.pending, { descriptions = curr_stack })
-  end
+  table.insert(results.pending, { descriptions = curr_stack })
 end
 
 describe = mod.describe
@@ -238,17 +215,23 @@ mod.run = function(file)
   end
 
   coroutine.wrap(function()
-    loaded()
-
-    -- If nothing runs (empty file without top level describe)
-    if not results.pass then
-      return vim.cmd('0cq')
+    local ok, err = xpcall(loaded, handler)
+    if not ok then
+      print(HEADER)
+      print('ERROR OUTSIDE OF DESCRIBE')
+      print(color_string('red', err))
+      print(HEADER)
+      return vim.cmd('2cq')
     end
 
     mod.format_results(results)
 
     if #results.errs ~= 0 then
-      print('We had an unexpected error: ', vim.inspect(results.errs), vim.inspect(results))
+      print('Unexpected errors:')
+      for _, e in ipairs(results.errs) do
+        print(FAIL, '||', table.concat(e.descriptions, ' '))
+        print(indent(e.msg, 12))
+      end
       return vim.cmd('2cq')
     elseif #results.fail > 0 then
       print('Tests Failed. Exit: 1')
