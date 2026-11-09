@@ -25,12 +25,11 @@ end
 
 -- We are shadowing print so people can reliably print messages
 print = function(...)
-  for _, v in ipairs({ ... }) do
-    io.stdout:write(tostring(v))
-    io.stdout:write('\t')
+  local args = { ... }
+  for i = 1, select('#', ...) do
+    args[i] = tostring(args[i])
   end
-
-  io.stdout:write('\r\n')
+  io.stdout:write(table.concat(args, '\t'), '\n')
 end
 
 local mod = {}
@@ -132,10 +131,6 @@ mod.after_each = function(fn)
   table.insert(current_after_each[#current_description], fn)
 end
 
-mod.clear = function()
-  vim.api.nvim_buf_set_lines(0, 0, -1, false, {})
-end
-
 --- Run the hooks of all levels: outermost first, or innermost first if `reverse`.
 local run_each = function(tbl, reverse)
   local first, last, step = 1, #tbl, 1
@@ -194,7 +189,6 @@ it = mod.it
 pending = mod.pending
 before_each = mod.before_each
 after_each = mod.after_each
-clear = mod.clear
 ---@type Luassert
 assert = require('luassert')
 

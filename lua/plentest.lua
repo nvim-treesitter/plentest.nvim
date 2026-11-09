@@ -1,5 +1,3 @@
-local plentest_dir = vim.fn.fnamemodify(debug.getinfo(1).source:match('@?(.*[/\\])'), ':p:h:h:h')
-
 local M = {}
 
 local function write(s)
@@ -27,55 +25,58 @@ end
 local function test_paths(paths, opts)
   opts = vim.tbl_deep_extend('force', {
     nvim_cmd = vim.v.progpath,
-    winopts = { winblend = 3 },
     sequential = false,
-    keep_going = true,
     timeout = 50000, -- per file
   }, opts or {})
 
-  vim.env.PLENTEST_TIMEOUT = opts.timeout
+  local function cmd(path)
+    return {
+      opts.nvim_cmd,
+      '--headless',
+      '--clean',
+      '-u',
+      opts.minimal_init,
+      '-c',
+      string.format('lua require("busted").run(%q)', vim.fs.abspath(path)),
+    }
+  end
 
   local failed, timed_out = {}, {}
   local totals = { Success = 0, Failed = 0, Errors = 0, Pending = 0 }
-  local jobs = vim.tbl_map(function(p)
-    local args = {
-      opts.nvim_cmd,
-      '--headless',
-      '-c',
-      'set rtp+=.,' .. vim.fn.escape(plentest_dir, ' '),
-    }
+  local done = 0
 
-    if opts.minimal_init then
-      table.insert(args, '--clean')
-      table.insert(args, '-u')
-      table.insert(args, opts.minimal_init)
-    end
-
-    table.insert(args, '-c')
-    table.insert(args, string.format('lua require("busted").run("%s")', vim.fs.abspath(p)))
-    return args
-  end, paths)
-
-  for i, job in pairs(jobs) do
-    vim.system(job, { timeout = opts.timeout }, function(obj)
+  local function start(i)
+    local path = paths[i]
+    vim.system(cmd(path), { timeout = opts.timeout }, function(obj)
       -- Handle the result on the main loop, so that all output is written before the runner exits.
       vim.schedule(function()
         write(obj.stderr or '')
         write(count(totals, obj.stdout or ''))
         if obj.code == 124 then
-          write(('TIMEOUT after %d ms: %s'):format(opts.timeout, paths[i]))
-          table.insert(timed_out, paths[i])
+          write(('TIMEOUT after %d ms: %s'):format(opts.timeout, path))
+          table.insert(timed_out, path)
         elseif obj.code ~= 0 then
-          table.insert(failed, paths[i])
+          table.insert(failed, path)
         end
-        jobs[i] = nil
+        done = done + 1
+        if opts.sequential and paths[i + 1] then
+          start(i + 1)
+        end
       end)
     end)
   end
 
+  if opts.sequential then
+    start(1)
+  else
+    for i = 1, #paths do
+      start(i)
+    end
+  end
+
   -- Every file has its own timeout, so this ends once the last one is done or killed.
   vim.wait(2 ^ 31 - 1, function()
-    return vim.tbl_isempty(jobs)
+    return done == #paths
   end, 50)
 
   write(string.rep('=', 40))
@@ -98,17 +99,34 @@ local function test_paths(paths, opts)
   return vim.cmd((#failed > 0 or #timed_out > 0) and '1cq' or '0cq')
 end
 
+--- Run all `*_spec.lua` files in `directory` (or the spec file `directory` itself).
+--- `opts.minimal_init` (required) must put plentest and the tested plugin on the 'runtimepath'.
 function M.test_directory(directory, opts)
+  if not (opts and opts.minimal_init) then
+    write('plentest: opts.minimal_init is required')
+    return vim.cmd('1cq')
+  end
   print('Starting...')
-  local paths = vim.fs.find(function(name)
-    return vim.glob.to_lpeg('*_spec.lua'):match(name)
-  end, { path = directory, type = 'file', limit = math.huge })
+  local paths
+  if vim.fn.isdirectory(directory) == 1 then
+    paths = vim.fs.find(function(name)
+      return name:match('_spec%.lua$') ~= nil
+    end, { path = directory, type = 'file', limit = math.huge })
+    table.sort(paths)
+  elseif vim.uv.fs_stat(directory) then
+    paths = { directory }
+  else
+    paths = {}
+  end
+
+  if #paths == 0 then
+    write('No spec files found in ' .. directory)
+    return vim.cmd('1cq')
+  end
 
   test_paths(paths, opts)
 end
 
-function M.test_file(filepath)
-  test_paths({ filepath })
-end
+M.test_file = M.test_directory
 
 return M
