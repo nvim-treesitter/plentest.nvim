@@ -2,12 +2,10 @@ local plentest_dir = vim.fn.fnamemodify(debug.getinfo(1).source:match('@?(.*[/\\
 
 local M = {}
 
-local outputter = vim.schedule_wrap(function(...)
-  for _, v in ipairs({ ... }) do
-    io.stdout:write(tostring(v))
-    io.stdout:write('\n')
-  end
-end)
+local function write(s)
+  io.stdout:write(s)
+  io.stdout:write('\n')
+end
 
 local function test_paths(paths, opts)
   opts = vim.tbl_deep_extend('force', {
@@ -15,7 +13,7 @@ local function test_paths(paths, opts)
     winopts = { winblend = 3 },
     sequential = false,
     keep_going = true,
-    timeout = 50000,
+    timeout = 50000, -- per file
   }, opts or {})
 
   vim.env.PLENTEST_TIMEOUT = opts.timeout
@@ -41,16 +39,24 @@ local function test_paths(paths, opts)
   end, paths)
 
   for i, job in pairs(jobs) do
-    vim.system(job, {}, function(obj)
-      failure = failure or obj.code ~= 0
-      outputter(obj.stderr)
-      outputter(obj.stdout)
-      jobs[i] = nil
+    vim.system(job, { timeout = opts.timeout }, function(obj)
+      -- Handle the result on the main loop, so that all output is written before the runner exits.
+      vim.schedule(function()
+        failure = failure or obj.code ~= 0
+        write(obj.stderr or '')
+        write(obj.stdout or '')
+        if obj.code == 124 then
+          write(('TIMEOUT after %d ms: %s'):format(opts.timeout, paths[i]))
+        end
+        jobs[i] = nil
+      end)
     end)
   end
-  vim.wait(opts.timeout, function()
+
+  -- Every file has its own timeout, so this ends once the last one is done or killed.
+  vim.wait(2 ^ 31 - 1, function()
     return vim.tbl_isempty(jobs)
-  end)
+  end, 50)
 
   if failure then
     return vim.cmd('1cq')
